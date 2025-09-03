@@ -10,7 +10,8 @@ import dateparser
 from dateparser.search import search_dates
 
 # ========== CONFIG ==========
-TOKEN = "8487822704:AAFVQrTs6vbU3ugGWhGYA40ALI9Kh_mKPYk"   # 🔑 replace with your actual bot token
+import os
+TOKEN = os.getenv("BOT_TOKEN")
 DB_FILE = "reminders.db"
 # ============================
 
