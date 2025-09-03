@@ -1,0 +1,13 @@
+services:
+  - type: worker
+    name: yaadse-bot
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python bot.py"
+    envVars:
+      - key: TELEGRAM_TOKEN
+        sync: false
+databases:
+  - name: yaadse-db
+    databaseName: reminders
+    user: botuser
