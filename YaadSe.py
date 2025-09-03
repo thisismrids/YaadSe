@@ -4,9 +4,6 @@ from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# ---------------------------
-# Database setup
-# ---------------------------
 DB_FILE = "reminders.db"
 
 def init_db():
@@ -23,9 +20,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-# ---------------------------
-# Bot Commands
-# ---------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Hello! I’m YaadSe — your reminder bot.\n\n"
@@ -39,7 +33,6 @@ async def remind(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message = " ".join(context.args[1:])
         remind_at = datetime.now() + timedelta(minutes=minutes)
 
-        # Save to DB
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
         c.execute("INSERT INTO reminders (chat_id, message, remind_at) VALUES (?, ?, ?)",
@@ -49,9 +42,8 @@ async def remind(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(f"✅ Reminder set for {minutes} minutes from now!")
 
-        # Schedule reminder
         context.job_queue.run_once(
-            callback=send_reminder,
+            send_reminder,
             when=minutes * 60,
             chat_id=update.effective_chat.id,
             data=message
@@ -64,9 +56,6 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
     await context.bot.send_message(job.chat_id, text=f"⏰ Reminder: {job.data}")
 
-# ---------------------------
-# Load reminders from DB on restart
-# ---------------------------
 def load_reminders(app):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -80,15 +69,12 @@ def load_reminders(app):
         delay = (remind_at - now).total_seconds()
         if delay > 0:
             app.job_queue.run_once(
-                callback=send_reminder,
+                send_reminder,
                 when=delay,
                 chat_id=chat_id,
                 data=message
             )
 
-# ---------------------------
-# Main function
-# ---------------------------
 def main():
     TOKEN = os.getenv("BOT_TOKEN")
     if not TOKEN:
