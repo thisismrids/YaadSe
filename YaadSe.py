@@ -1,122 +1,115 @@
 import os
-import logging
-from datetime import datetime
-from apscheduler.schedulers.background import BackgroundScheduler
+import sqlite3
+from datetime import datetime, timedelta
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# Enable logging
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
-logger = logging.getLogger(__name__)
+# ---------------------------
+# Database setup
+# ---------------------------
+DB_FILE = "reminders.db"
 
-# Bot token from environment variable
-TOKEN = os.getenv("8331278703:AAHPEVqgxd8WDXOLDhxeSFvwdvHF32tVWs8")
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS reminders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            message TEXT NOT NULL,
+            remind_at TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+    conn.close()
 
-# In-memory reminder store
-reminders = {}
-
-# ---------------- COMMAND HANDLERS ---------------- #
-
+# ---------------------------
+# Bot Commands
+# ---------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start command"""
     await update.message.reply_text(
-        "👋 Hello! I’m YaadSe – your personal reminder bot.\n\n"
-        "Commands:\n"
-        "/addreminder <time in HH:MM> <task> – add a reminder\n"
-        "/listreminders – see your reminders\n"
-        "/help – show this message again"
+        "👋 Hello! I’m YaadSe — your reminder bot.\n\n"
+        "Use /remind <minutes> <message> to set a reminder.\n"
+        "Example: /remind 10 Drink water 💧"
     )
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Help command"""
-    await update.message.reply_text(
-        "Commands:\n"
-        "/addreminder <time in HH:MM> <task>\n"
-        "/listreminders\n"
-        "/help"
-    )
-
-async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Add a reminder"""
+async def remind(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        chat_id = update.message.chat_id
-        args = context.args
+        minutes = int(context.args[0])
+        message = " ".join(context.args[1:])
+        remind_at = datetime.now() + timedelta(minutes=minutes)
 
-        if len(args) < 2:
-            await update.message.reply_text("⚠️ Usage: /addreminder 14:30 Take medicine")
-            return
+        # Save to DB
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("INSERT INTO reminders (chat_id, message, remind_at) VALUES (?, ?, ?)",
+                  (update.effective_chat.id, message, remind_at.isoformat()))
+        conn.commit()
+        conn.close()
 
-        time_str = args[0]
-        task = " ".join(args[1:])
+        await update.message.reply_text(f"✅ Reminder set for {minutes} minutes from now!")
 
-        reminder_time = datetime.strptime(time_str, "%H:%M").time()
+        # Schedule reminder
+        context.job_queue.run_once(
+            callback=send_reminder,
+            when=minutes * 60,
+            chat_id=update.effective_chat.id,
+            data=message
+        )
 
-        if chat_id not in reminders:
-            reminders[chat_id] = []
+    except (IndexError, ValueError):
+        await update.message.reply_text("⚠️ Usage: /remind <minutes> <message>")
 
-        reminders[chat_id].append((reminder_time, task))
-        await update.message.reply_text(f"✅ Reminder set at {time_str} for: {task}")
+async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
+    job = context.job
+    await context.bot.send_message(job.chat_id, text=f"⏰ Reminder: {job.data}")
 
-    except ValueError:
-        await update.message.reply_text("⚠️ Time format should be HH:MM (24-hour).")
+# ---------------------------
+# Load reminders from DB on restart
+# ---------------------------
+def load_reminders(app):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT chat_id, message, remind_at FROM reminders")
+    rows = c.fetchall()
+    conn.close()
 
-async def list_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List reminders"""
-    chat_id = update.message.chat_id
-    if chat_id not in reminders or not reminders[chat_id]:
-        await update.message.reply_text("📭 You don’t have any reminders yet.")
-        return
+    now = datetime.now()
+    for chat_id, message, remind_at_str in rows:
+        remind_at = datetime.fromisoformat(remind_at_str)
+        delay = (remind_at - now).total_seconds()
+        if delay > 0:
+            app.job_queue.run_once(
+                callback=send_reminder,
+                when=delay,
+                chat_id=chat_id,
+                data=message
+            )
 
-    text = "📝 Your reminders:\n"
-    for rtime, task in reminders[chat_id]:
-        text += f"⏰ {rtime.strftime('%H:%M')} – {task}\n"
-    await update.message.reply_text(text)
-
-# ---------------- REMINDER CHECKER ---------------- #
-
-async def check_reminders(app):
-    """Check reminders and send alerts"""
-    now = datetime.now().time().replace(second=0, microsecond=0)
-    for chat_id, user_reminders in reminders.items():
-        for rtime, task in user_reminders:
-            if rtime == now:
-                try:
-                    await app.bot.send_message(chat_id=chat_id, text=f"⏰ Reminder: {task}")
-                except Exception as e:
-                    logger.error(f"Error sending reminder: {e}")
-
-# ---------------- MAIN ---------------- #
-
+# ---------------------------
+# Main function
+# ---------------------------
 def main():
-    logger.info("Starting YaadSe Bot…")
+    # Read BOT_TOKEN from environment (Render secret)
+    TOKEN = os.getenv("BOT_TOKEN")
+    if not TOKEN:
+        raise ValueError("⚠️ BOT_TOKEN environment variable not set!")
 
-    # Scheduler
-    scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
-    scheduler.start()
+    # Init DB
+    init_db()
 
-    # Build Application
+    # Build application
     app = ApplicationBuilder().token(TOKEN).build()
 
     # Handlers
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("addreminder", add_reminder))
-    app.add_handler(CommandHandler("listreminders", list_reminders))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, help_command))
+    app.add_handler(CommandHandler("remind", remind))
 
-    # Schedule reminder check every minute
-    scheduler.add_job(lambda: app.create_task(check_reminders(app)), "interval", minutes=1)
+    # Load reminders from DB
+    load_reminders(app)
 
     # Run bot
+    print("🚀 Bot is running...")
     app.run_polling()
 
 if __name__ == "__main__":
