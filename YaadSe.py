@@ -90,25 +90,19 @@ def load_reminders(app):
 # Main function
 # ---------------------------
 def main():
-    # Read BOT_TOKEN from environment (Render secret)
     TOKEN = os.getenv("BOT_TOKEN")
     if not TOKEN:
         raise ValueError("⚠️ BOT_TOKEN environment variable not set!")
 
-    # Init DB
     init_db()
 
-    # Build application
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("remind", remind))
 
-    # Load reminders from DB
     load_reminders(app)
 
-    # Run bot
     print("🚀 Bot is running...")
     app.run_polling()
 
