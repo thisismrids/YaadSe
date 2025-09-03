@@ -1,6 +1,8 @@
 import logging
-import sqlite3
+import os
 from datetime import datetime
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from telegram import Update
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -10,9 +12,13 @@ import dateparser
 from dateparser.search import search_dates
 
 # ========== CONFIG ==========
-import os
-TOKEN = os.getenv("BOT_TOKEN")
-DB_FILE = "reminders.db"
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not TOKEN:
+    raise ValueError("⚠️ TELEGRAM_TOKEN not set in environment variables")
+if not DATABASE_URL:
+    raise ValueError("⚠️ DATABASE_URL not set in environment variables")
 # ============================
 
 logging.basicConfig(
@@ -20,40 +26,42 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# --- DB Setup ---
+# --- DB Helpers ---
+def get_conn():
+    return psycopg2.connect(DATABASE_URL, sslmode="require")
+
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS reminders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT,
             message TEXT,
-            remind_at TEXT
+            remind_at TIMESTAMP
         )
     """)
     conn.commit()
+    cur.close()
     conn.close()
 
 def save_reminder(user_id, message, remind_at):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("INSERT INTO reminders (user_id, message, remind_at) VALUES (?, ?, ?)",
-              (user_id, message, remind_at))
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO reminders (user_id, message, remind_at) VALUES (%s, %s, %s)",
+        (user_id, message, remind_at)
+    )
     conn.commit()
+    cur.close()
     conn.close()
 
 def load_reminders(job_queue):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT user_id, message, remind_at FROM reminders")
-    for user_id, message, remind_at in c.fetchall():
-        try:
-            remind_time = datetime.fromisoformat(remind_at)
-        except ValueError:
-            remind_time = datetime.strptime(remind_at, "%Y-%m-%d %H:%M")
-
-        delay = (remind_time - datetime.now()).total_seconds()
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT user_id, message, remind_at FROM reminders")
+    for user_id, message, remind_at in cur.fetchall():
+        delay = (remind_at - datetime.now()).total_seconds()
         if delay > 0:
             job_queue.run_once(
                 send_reminder,
@@ -61,13 +69,15 @@ def load_reminders(job_queue):
                 chat_id=user_id,
                 data={"message": message}
             )
+    cur.close()
     conn.close()
 
 def delete_all_reminders(user_id):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("DELETE FROM reminders WHERE user_id = ?", (user_id,))
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM reminders WHERE user_id = %s", (user_id,))
     conn.commit()
+    cur.close()
     conn.close()
 
 # --- Bot Handlers ---
@@ -111,7 +121,7 @@ async def remind(update: Update, context: ContextTypes.DEFAULT_TYPE):
             message = "Reminder"
 
         user_id = update.message.chat_id
-        save_reminder(user_id, message, remind_time.isoformat())
+        save_reminder(user_id, message, remind_time)
 
         delay = (remind_time - datetime.now()).total_seconds()
         context.job_queue.run_once(
@@ -137,18 +147,22 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
     )
 
     # Auto-delete reminder from DB once sent
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("DELETE FROM reminders WHERE user_id = ? AND message = ?",
-              (job.chat_id, job.data["message"]))
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "DELETE FROM reminders WHERE user_id = %s AND message = %s",
+        (job.chat_id, job.data["message"])
+    )
     conn.commit()
+    cur.close()
     conn.close()
 
 async def list_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT id, message, remind_at FROM reminders WHERE user_id = ?", (update.message.chat_id,))
-    reminders = c.fetchall()
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id, message, remind_at FROM reminders WHERE user_id = %s", (update.message.chat_id,))
+    reminders = cur.fetchall()
+    cur.close()
     conn.close()
 
     if not reminders:
@@ -165,10 +179,11 @@ async def list_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
 DELETE_CHOICE = 1
 
 async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT id, message, remind_at FROM reminders WHERE user_id = ?", (update.message.chat_id,))
-    reminders = c.fetchall()
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id, message, remind_at FROM reminders WHERE user_id = %s", (update.message.chat_id,))
+    reminders = cur.fetchall()
+    cur.close()
     conn.close()
 
     if not reminders:
@@ -194,10 +209,11 @@ async def delete_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if 0 <= choice < len(reminders):
             rid, msg, when = reminders[choice]
 
-            conn = sqlite3.connect(DB_FILE)
-            c = conn.cursor()
-            c.execute("DELETE FROM reminders WHERE id = ?", (rid,))
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("DELETE FROM reminders WHERE id = %s", (rid,))
             conn.commit()
+            cur.close()
             conn.close()
 
             await update.message.reply_text(f"✅ Deleted reminder: {msg} ⏰ {when}")
