@@ -9,6 +9,9 @@ from telegram.ext import (
     ContextTypes,
 )
 
+import telegram
+print("Running python-telegram-bot version:", telegram.__version__)
+
 # =========================
 # CONFIG
 # =========================
